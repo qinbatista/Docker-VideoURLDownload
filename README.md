@@ -31,6 +31,10 @@ Run the containerized unit checks with `docker compose --profile test run --rm t
 
 For a reverse proxy or a public hostname, set `PUBLIC_BASE_URL` to that externally reachable base address so returned `download_url` values use it. Without that setting, the API returns a same-origin URL based on the request host plus the stable `download_path`.
 
+## GitHub image delivery
+
+Every push to `main` builds and publishes the AMD64 and ARM64 API image to `ghcr.io/qinbatista/video-url-download:latest`. The `api` service uses that image by default and is marked for Watchtower. On the configured Pi, Watchtower checks the registry every five minutes and recreates only this API container when a newer image is published. Compose or `.env` changes still require a normal Compose deploy.
+
 ## Pi HTTPS proxy
 
 The optional `proxy` profile runs Caddy on public ports `80` and `8787`. It obtains a trusted certificate with ACME HTTP-01 over port `80`, then proxies `https://la.qyp.life:8787` to the private Docker service `api:8787`. It never binds the API container publicly. On the Pi, keep `BIND_ADDRESS=127.0.0.1`, move the API's loopback port to `PORT=8788`, set `PUBLIC_BASE_URL=https://la.qyp.life:8787`, and run `docker compose --profile proxy up -d`. Port `443` is not used by this profile. The proxy uses public DNS resolvers because it must resolve ACME endpoints independently of the host's Docker daemon resolver; `CADDY_IMAGE` defaults to the official `caddy:2` image and can point to a locally preloaded equivalent when image pulls are unavailable.
