@@ -1,0 +1,5 @@
+# Caddy obtains and renews the public certificate through HTTP-01 on port 80.
+# The API itself is reachable only on the Docker network (api:8787).
+https://{$PROXY_HOSTNAME:la.qyp.life}:8787 {
+	reverse_proxy api:8787
+}

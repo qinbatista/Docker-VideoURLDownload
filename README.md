@@ -30,3 +30,7 @@ Create a private `.env` from `.env.example`, replace `API_KEY` with a long rando
 Run the containerized unit checks with `docker compose --profile test run --rm test`. A public direct video such as `https://media.w3.org/2010/05/sintel/trailer.mp4` is suitable for an integration test because it exercises the generic extractor without relying on login-only platform content.
 
 For a reverse proxy or a public hostname, set `PUBLIC_BASE_URL` to that externally reachable base address so returned `download_url` values use it. Without that setting, the API returns a same-origin URL based on the request host plus the stable `download_path`.
+
+## Pi HTTPS proxy
+
+The optional `proxy` profile runs Caddy on public ports `80` and `8787`. It obtains a trusted certificate with ACME HTTP-01 over port `80`, then proxies `https://la.qyp.life:8787` to the private Docker service `api:8787`. It never binds the API container publicly. On the Pi, keep `BIND_ADDRESS=127.0.0.1`, move the API's loopback port to `PORT=8788`, set `PUBLIC_BASE_URL=https://la.qyp.life:8787`, and run `docker compose --profile proxy up -d`. Port `443` is not used by this profile. The proxy uses public DNS resolvers because it must resolve ACME endpoints independently of the host's Docker daemon resolver; `CADDY_IMAGE` defaults to the official `caddy:2` image and can point to a locally preloaded equivalent when image pulls are unavailable.
