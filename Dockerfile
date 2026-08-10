@@ -28,4 +28,6 @@ USER root
 COPY requirements-dev.txt .
 RUN python -m pip install --no-cache-dir -r requirements-dev.txt
 COPY tests ./tests
+COPY compose.yaml ./compose.yaml
+COPY .github/workflows/publish-image.yml ./.github/workflows/publish-image.yml
 CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
