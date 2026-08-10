@@ -10,7 +10,15 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the containerized tests
+        run: docker build --target test --tag video-url-download-test . && docker run --rm video-url-download-test
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

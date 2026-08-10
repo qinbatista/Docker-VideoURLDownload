@@ -15,5 +15,7 @@ def test_workflow_publishes_a_multiarch_api_image() -> None:
     workflow = (PROJECT_ROOT / ".github/workflows/publish-image.yml").read_text()
 
     assert "packages: write" in workflow
+    assert "needs: test" in workflow
+    assert "docker run --rm video-url-download-test" in workflow
     assert "linux/amd64,linux/arm64" in workflow
     assert "ghcr.io/${{ github.repository_owner }}/video-url-download:latest" in workflow

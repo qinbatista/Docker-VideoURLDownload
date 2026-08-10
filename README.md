@@ -33,7 +33,7 @@ For a reverse proxy or a public hostname, set `PUBLIC_BASE_URL` to that external
 
 ## GitHub image delivery
 
-Every push to `main` builds and publishes the AMD64 and ARM64 API image to `ghcr.io/qinbatista/video-url-download:latest`. The `api` service uses that image by default and is marked for Watchtower. On the configured Pi, Watchtower checks the registry every five minutes and recreates only this API container when a newer image is published. Compose or `.env` changes still require a normal Compose deploy.
+Every push to `main` runs the containerized tests, then builds and publishes the AMD64 and ARM64 API image to `ghcr.io/qinbatista/video-url-download:latest`. The `api` service uses that image by default and is marked for Watchtower. On the configured Pi, Watchtower checks the registry every five minutes and recreates only this API container when a newer image is published. Compose or `.env` changes still require a normal Compose deploy.
 
 ## Pi HTTPS proxy
 
