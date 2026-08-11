@@ -29,7 +29,7 @@ def test_request_url_decodes_yt_dlp_byte_urls() -> None:
     assert app.request_url(YtDlpRequest()) == "https://media.example/video.mp4"
 
 
-def test_list_video_files_accepts_video_mime_suffixes(tmp_path) -> None:
+def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
     video_file = tmp_path / "recording.ogv"
     video_file.write_bytes(b"video")
 
