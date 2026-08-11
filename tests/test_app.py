@@ -38,6 +38,8 @@ def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
     class FailedYoutubeDL:
+        download_errors = ["ERROR: [twitter:amplify] Unable to download webpage: HTTP Error 500: Domain Not Found (https://amp.twimg.com/v/example)"]
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
@@ -47,8 +49,8 @@ def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch,
         def __exit__(self, *_args) -> bool:
             return False
 
-        def download(self, _urls) -> None:
-            raise app.yt_dlp.utils.DownloadError("ERROR: [twitter:amplify] Unable to download webpage: HTTP Error 500: Domain Not Found (https://amp.twimg.com/v/example)")
+        def download(self, _urls) -> int:
+            return 1
 
     monkeypatch.setattr(app, "PublicOnlyYoutubeDL", FailedYoutubeDL)
 

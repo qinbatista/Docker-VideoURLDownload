@@ -115,10 +115,24 @@ def request_url(request: object) -> str:
     raise ValueError("A valid public HTTP or HTTPS URL is required.")
 
 
+def is_retired_x_amplify_error(error_text: str) -> bool:
+    normalized_error = error_text.lower()
+    return "amp.twimg.com" in normalized_error and "domain not found" in normalized_error
+
+
 class PublicOnlyYoutubeDL(yt_dlp.YoutubeDL):
+    def __init__(self, *args, **kwargs) -> None:
+        self.download_errors: list[str] = []
+        super().__init__(*args, **kwargs)
+
     def urlopen(self, request):
         validate_public_http_url(request_url(request))
         return super().urlopen(request)
+
+    def trouble(self, message=None, tb=None, is_error=True):
+        if message is not None and is_error:
+            self.download_errors.append(str(message))
+        return super().trouble(message, tb, is_error)
 
 
 def list_video_files(job_directory: Path) -> list[Path]:
@@ -141,12 +155,13 @@ def download_videos(source_url: str, job_directory: Path, max_items: int) -> lis
         with PublicOnlyYoutubeDL(downloader_options) as downloader:
             downloader.download([source_url])
     except yt_dlp.utils.DownloadError as error:
-        error_text = str(error).lower()
-        if "amp.twimg.com" in error_text and "domain not found" in error_text:
+        if is_retired_x_amplify_error(str(error)):
             raise DownloadFailed("This X post references an old video that X no longer serves.") from error
         raise DownloadFailed from error
     video_files = list_video_files(job_directory)
     if not video_files:
+        if any(is_retired_x_amplify_error(error_message) for error_message in downloader.download_errors):
+            raise DownloadFailed("This X post references an old video that X no longer serves.")
         raise DownloadFailed
     return video_files
 
