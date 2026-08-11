@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 import time
@@ -98,6 +99,19 @@ def test_iphone_conversion_failure_returns_a_clear_error(monkeypatch, tmp_path) 
         app.make_video_iphone_compatible(video_file)
 
     assert not (tmp_path / "clip.iphone.mp4").exists()
+
+
+def test_shortcut_download_returns_a_failure_message_instead_of_an_empty_success(monkeypatch) -> None:
+    async def fail_download(*_args, **_kwargs):
+        raise app.HTTPException(status_code=422, detail="No public downloadable video was found at that URL.")
+
+    monkeypatch.setattr(app, "create_download", fail_download)
+
+    response = asyncio.run(app.create_shortcut_download(app.DownloadRequest(url="https://instagram.com/reel/example"), SimpleNamespace()))
+
+    assert response.success is False
+    assert response.files == []
+    assert response.error == "No public downloadable video was found at that URL."
 
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:

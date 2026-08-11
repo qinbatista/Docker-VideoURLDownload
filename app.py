@@ -75,6 +75,12 @@ class DownloadResponse(BaseModel):
     files: list[DownloadFile]
 
 
+class ShortcutDownloadResponse(BaseModel):
+    success: bool
+    error: str | None = None
+    files: list[DownloadFile] = Field(default_factory=list)
+
+
 def ensure_data_paths() -> None:
     jobs_directory.mkdir(parents=True, exist_ok=True)
 
@@ -301,6 +307,15 @@ async def create_download(download_request: DownloadRequest, request: Request) -
     expires_at_epoch = time.time() + settings.retention_seconds
     write_job_manifest(job_directory, expires_at_epoch)
     return DownloadResponse(job_id=job_id, expires_at=datetime.fromtimestamp(expires_at_epoch, timezone.utc), files=[file_link(request, job_id, video_file) for video_file in video_files])
+
+
+@app.post("/v1/shortcut-downloads", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
+async def create_shortcut_download(download_request: DownloadRequest, request: Request) -> ShortcutDownloadResponse:
+    try:
+        download_response = await create_download(download_request, request)
+    except HTTPException as error:
+        return ShortcutDownloadResponse(success=False, error=str(error.detail))
+    return ShortcutDownloadResponse(success=True, files=download_response.files)
 
 
 @app.get("/v1/files/{job_id}/{filename}")
