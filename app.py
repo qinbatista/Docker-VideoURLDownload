@@ -9,6 +9,7 @@ import os
 import secrets
 import shutil
 import socket
+import subprocess
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -149,6 +150,30 @@ def is_video_file(candidate: Path) -> bool:
     return media_type is not None and media_type.startswith(VIDEO_MIME_PREFIX)
 
 
+def make_video_iphone_compatible(video_file: Path) -> Path:
+    iphone_video_file = video_file.with_name(f"{video_file.stem}.iphone.mp4")
+    try:
+        probe_result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,pix_fmt", "-of", "json", str(video_file)], check=True, capture_output=True, text=True, timeout=30)
+        streams = json.loads(probe_result.stdout)["streams"]
+        video_streams = [stream for stream in streams if stream["codec_type"] == "video"]
+        audio_streams = [stream for stream in streams if stream["codec_type"] == "audio"]
+        if not video_streams:
+            raise ValueError("The downloaded file did not contain a video stream.")
+        if video_file.suffix.lower() == ".mp4" and all(stream["codec_name"] == "h264" and stream.get("pix_fmt") == "yuv420p" for stream in video_streams) and all(stream["codec_name"] == "aac" for stream in audio_streams):
+            return video_file
+        subprocess.run(["ffmpeg", "-y", "-i", str(video_file), "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(iphone_video_file)], check=True, capture_output=True, text=True, timeout=1800)
+        if not iphone_video_file.is_file() or iphone_video_file.stat().st_size == 0:
+            raise ValueError("FFmpeg did not create a video file.")
+        destination_file = video_file.with_suffix(".mp4")
+        iphone_video_file.replace(destination_file)
+        if video_file != destination_file:
+            video_file.unlink()
+        return destination_file
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as error:
+        iphone_video_file.unlink(missing_ok=True)
+        raise DownloadFailed("The downloaded video could not be converted to an iPhone-compatible MP4.") from error
+
+
 def download_videos(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
     downloader_options = {"outtmpl": str(job_directory / "%(autonumber)03d-%(id)s.%(ext)s"), "format": "bv*+ba/b", "merge_output_format": "mp4", "noplaylist": False, "playlistend": max_items, "max_filesize": settings.max_file_size_bytes, "nopart": True, "continuedl": False, "overwrites": False, "quiet": True, "no_warnings": True, "noprogress": True, "ignoreerrors": True, "retries": 2, "fragment_retries": 2, "socket_timeout": 30, "concurrent_fragment_downloads": 2, "restrictfilenames": True, "js_runtimes": {"node": {}}}
     try:
@@ -163,7 +188,7 @@ def download_videos(source_url: str, job_directory: Path, max_items: int) -> lis
         if any(is_retired_x_amplify_error(error_message) for error_message in downloader.download_errors):
             raise DownloadFailed("This X post references an old video that X no longer serves.")
         raise DownloadFailed
-    return video_files
+    return [make_video_iphone_compatible(video_file) for video_file in video_files]
 
 
 def write_job_manifest(job_directory: Path, expires_at: float) -> None:

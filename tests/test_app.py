@@ -1,4 +1,8 @@
+import json
+import subprocess
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yt_dlp_ejs
@@ -34,6 +38,58 @@ def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
     video_file.write_bytes(b"video")
 
     assert app.list_video_files(tmp_path) == [video_file]
+
+
+def test_iphone_compatible_mp4_skips_transcoding(monkeypatch, tmp_path) -> None:
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(b"original")
+
+    def fake_run(arguments, **_kwargs):
+        assert arguments[0] == "ffprobe"
+        return SimpleNamespace(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"}, {"codec_type": "audio", "codec_name": "aac"}]}))
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+
+    assert app.make_video_iphone_compatible(video_file) == video_file
+    assert video_file.read_bytes() == b"original"
+
+
+def test_vp9_mp4_is_transcoded_to_iphone_compatible_mp4(monkeypatch, tmp_path) -> None:
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(b"vp9")
+
+    def fake_run(arguments, **_kwargs):
+        if arguments[0] == "ffprobe":
+            return SimpleNamespace(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "vp9", "pix_fmt": "yuv420p"}, {"codec_type": "audio", "codec_name": "aac"}]}))
+        assert arguments[:2] == ["ffmpeg", "-y"]
+        assert "libx264" in arguments
+        assert "yuv420p" in arguments
+        Path(arguments[-1]).write_bytes(b"h264")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+
+    assert app.make_video_iphone_compatible(video_file) == video_file
+    assert video_file.read_bytes() == b"h264"
+    assert not (tmp_path / "clip.iphone.mp4").exists()
+
+
+def test_iphone_conversion_failure_returns_a_clear_error(monkeypatch, tmp_path) -> None:
+    video_file = tmp_path / "clip.webm"
+    video_file.write_bytes(b"vp9")
+
+    def fake_run(arguments, **_kwargs):
+        if arguments[0] == "ffprobe":
+            return SimpleNamespace(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "vp9", "pix_fmt": "yuv420p"}]}))
+        Path(arguments[-1]).write_bytes(b"partial")
+        raise subprocess.CalledProcessError(1, arguments)
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+
+    with pytest.raises(app.DownloadFailed, match="iPhone-compatible MP4"):
+        app.make_video_iphone_compatible(video_file)
+
+    assert not (tmp_path / "clip.iphone.mp4").exists()
 
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
