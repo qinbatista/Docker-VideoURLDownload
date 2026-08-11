@@ -41,6 +41,20 @@ def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
     assert app.list_video_files(tmp_path) == [video_file]
 
 
+def test_list_media_files_accepts_image_files(tmp_path) -> None:
+    image_file = tmp_path / "photo.webp"
+    image_file.write_bytes(b"image")
+
+    assert app.list_media_files(tmp_path) == [image_file]
+
+
+def test_page_image_parser_finds_open_graph_and_image_sources() -> None:
+    parser = app.PageImageParser()
+    parser.feed('<meta property="og:image" content="/preview.jpg"><img src="https://cdn.example/image.png">')
+
+    assert parser.image_urls == ["/preview.jpg", "https://cdn.example/image.png"]
+
+
 def test_iphone_compatible_mp4_is_remuxed_with_the_download_time(monkeypatch, tmp_path) -> None:
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(b"original")
@@ -101,6 +115,47 @@ def test_iphone_conversion_failure_returns_a_clear_error(monkeypatch, tmp_path) 
     assert not (tmp_path / "clip.iphone.mp4").exists()
 
 
+def test_webp_image_is_transcoded_to_an_iphone_compatible_jpeg(monkeypatch, tmp_path) -> None:
+    image_file = tmp_path / "photo.webp"
+    image_file.write_bytes(b"webp")
+
+    def fake_run(arguments, **_kwargs):
+        assert arguments[:2] == ["ffmpeg", "-y"]
+        assert arguments[arguments.index("-frames:v") + 1] == "1"
+        Path(arguments[-1]).write_bytes(b"jpeg")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+
+    converted_file = app.make_image_iphone_compatible(image_file)
+
+    assert converted_file == tmp_path / "photo.jpg"
+    assert converted_file.read_bytes() == b"jpeg"
+    assert not image_file.exists()
+
+
+def test_download_media_accepts_a_static_image_from_yt_dlp(monkeypatch, tmp_path) -> None:
+    class ImageYoutubeDL:
+        download_errors: list[str] = []
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+        def download(self, _urls) -> int:
+            (tmp_path / "001-photo.jpg").write_bytes(b"image")
+            return 0
+
+    monkeypatch.setattr(app, "PublicOnlyYoutubeDL", ImageYoutubeDL)
+
+    assert app.download_media("https://images.example/photo.jpg", tmp_path, 1) == [tmp_path / "001-photo.jpg"]
+
+
 def test_shortcut_download_returns_a_failure_message_instead_of_an_empty_success(monkeypatch) -> None:
     async def fail_download(*_args, **_kwargs):
         raise app.HTTPException(status_code=422, detail="No public downloadable video was found at that URL.")
@@ -133,7 +188,7 @@ def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch,
     monkeypatch.setattr(app, "PublicOnlyYoutubeDL", FailedYoutubeDL)
 
     with pytest.raises(app.DownloadFailed, match="X post references an old video"):
-        app.download_videos("https://x.com/example/status/1", tmp_path, 1)
+        app.download_media("https://x.com/example/status/1", tmp_path, 1)
 
 
 def test_expired_job_cleanup_removes_only_expired_job(tmp_path) -> None:

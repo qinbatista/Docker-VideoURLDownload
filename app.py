@@ -15,9 +15,11 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request as UrllibRequest, build_opener
 
 import yt_dlp
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -26,7 +28,12 @@ from pydantic import BaseModel, Field
 
 
 VIDEO_SUFFIXES = {".3gp", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".ts", ".webm"}
+IMAGE_SUFFIXES = {".avif", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_MIME_PREFIX = "video/"
+IMAGE_MIME_PREFIX = "image/"
+IPHONE_IMAGE_SUFFIXES = {".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png"}
+MAX_PAGE_HTML_BYTES = 1_000_000
+IMAGE_READ_CHUNK_BYTES = 64 * 1024
 
 
 def positive_integer(name: str, default: int) -> int:
@@ -142,8 +149,45 @@ class PublicOnlyYoutubeDL(yt_dlp.YoutubeDL):
         return super().trouble(message, tb, is_error)
 
 
+class PublicOnlyRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, status_code, message, headers, redirect_url):
+        validate_public_http_url(redirect_url)
+        return super().redirect_request(request, file_pointer, status_code, message, headers, redirect_url)
+
+
+class PageImageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attributes: list[tuple[str, str | None]]) -> None:
+        values = {name.lower(): value for name, value in attributes if value is not None}
+        if tag == "meta":
+            image_property = (values.get("property") or values.get("name") or values.get("itemprop") or "").lower()
+            if image_property in {"og:image", "og:image:url", "twitter:image", "twitter:image:src", "image"}:
+                self.add_url(values.get("content"))
+        elif tag == "img":
+            self.add_url(values.get("src"))
+
+    def add_url(self, candidate_url: str | None) -> None:
+        if candidate_url and candidate_url not in self.image_urls:
+            self.image_urls.append(candidate_url)
+
+
+def public_url_opener():
+    return build_opener(PublicOnlyRedirectHandler())
+
+
+def list_media_files(job_directory: Path) -> list[Path]:
+    return [candidate for candidate in sorted(job_directory.iterdir()) if candidate.is_file() and is_media_file(candidate)]
+
+
 def list_video_files(job_directory: Path) -> list[Path]:
     return [candidate for candidate in sorted(job_directory.iterdir()) if candidate.is_file() and is_video_file(candidate)]
+
+
+def is_media_file(candidate: Path) -> bool:
+    return is_video_file(candidate) or is_image_file(candidate)
 
 
 def is_video_file(candidate: Path) -> bool:
@@ -154,6 +198,16 @@ def is_video_file(candidate: Path) -> bool:
         return True
     media_type = mimetypes.guess_type(candidate.name)[0]
     return media_type is not None and media_type.startswith(VIDEO_MIME_PREFIX)
+
+
+def is_image_file(candidate: Path) -> bool:
+    if candidate.name == "manifest.json":
+        return False
+    suffix = candidate.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        return True
+    media_type = mimetypes.guess_type(candidate.name)[0]
+    return media_type is not None and media_type.startswith(IMAGE_MIME_PREFIX)
 
 
 def make_video_iphone_compatible(video_file: Path) -> Path:
@@ -181,21 +235,114 @@ def make_video_iphone_compatible(video_file: Path) -> Path:
         raise DownloadFailed("The downloaded video could not be converted to an iPhone-compatible MP4.") from error
 
 
-def download_videos(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
-    downloader_options = {"outtmpl": str(job_directory / "%(autonumber)03d-%(id)s.%(ext)s"), "format": "bv*+ba/b", "merge_output_format": "mp4", "noplaylist": False, "playlistend": max_items, "max_filesize": settings.max_file_size_bytes, "nopart": True, "continuedl": False, "overwrites": False, "quiet": True, "no_warnings": True, "noprogress": True, "ignoreerrors": True, "retries": 2, "fragment_retries": 2, "socket_timeout": 30, "concurrent_fragment_downloads": 2, "restrictfilenames": True, "js_runtimes": {"node": {}}}
+def make_image_iphone_compatible(image_file: Path) -> Path:
+    if image_file.suffix.lower() in IPHONE_IMAGE_SUFFIXES:
+        return image_file
+    iphone_image_file = image_file.with_name(f"{image_file.stem}.iphone.jpg")
     try:
-        with PublicOnlyYoutubeDL(downloader_options) as downloader:
+        subprocess.run(["ffmpeg", "-y", "-i", str(image_file), "-map", "0:v:0", "-frames:v", "1", "-q:v", "2", str(iphone_image_file)], check=True, capture_output=True, text=True, timeout=300)
+        if not iphone_image_file.is_file() or iphone_image_file.stat().st_size == 0:
+            raise ValueError("FFmpeg did not create an image file.")
+        destination_file = image_file.with_suffix(".jpg")
+        iphone_image_file.replace(destination_file)
+        if image_file != destination_file:
+            image_file.unlink()
+        return destination_file
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        iphone_image_file.unlink(missing_ok=True)
+        raise DownloadFailed("The downloaded image could not be converted to an iPhone-compatible JPEG.") from error
+
+
+def make_media_iphone_compatible(media_file: Path) -> Path:
+    if is_video_file(media_file):
+        return make_video_iphone_compatible(media_file)
+    if is_image_file(media_file):
+        return make_image_iphone_compatible(media_file)
+    raise DownloadFailed("The downloaded file was not an image or video.")
+
+
+def page_image_urls(source_url: str) -> list[str]:
+    try:
+        request = UrllibRequest(source_url, headers={"User-Agent": "Mozilla/5.0"})
+        with public_url_opener().open(request, timeout=30) as response:
+            if response.headers.get_content_type() not in {"application/xhtml+xml", "text/html"}:
+                return []
+            page_bytes = response.read(MAX_PAGE_HTML_BYTES + 1)
+            if len(page_bytes) > MAX_PAGE_HTML_BYTES:
+                return []
+            page_url = response.geturl()
+            page_encoding = response.headers.get_content_charset() or "utf-8"
+        parser = PageImageParser()
+        parser.feed(page_bytes.decode(page_encoding, errors="replace"))
+        return [urljoin(page_url, image_url) for image_url in parser.image_urls]
+    except (OSError, ValueError):
+        return []
+
+
+def image_suffix(content_type: str) -> str:
+    return {"image/avif": ".avif", "image/gif": ".gif", "image/heic": ".heic", "image/heif": ".heif", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(content_type, mimetypes.guess_extension(content_type) or ".img")
+
+
+def download_page_image(image_url: str, image_file: Path) -> Path | None:
+    temporary_file = image_file.with_suffix(".part")
+    destination_file = image_file
+    try:
+        validate_public_http_url(image_url)
+        request = UrllibRequest(image_url, headers={"User-Agent": "Mozilla/5.0"})
+        with public_url_opener().open(request, timeout=30) as response:
+            content_type = response.headers.get_content_type().lower()
+            if not content_type.startswith(IMAGE_MIME_PREFIX):
+                return None
+            destination_file = image_file.with_suffix(image_suffix(content_type))
+            temporary_file = destination_file.with_suffix(f"{destination_file.suffix}.part")
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > settings.max_file_size_bytes:
+                return None
+            total_bytes = 0
+            with temporary_file.open("xb") as destination:
+                while chunk := response.read(IMAGE_READ_CHUNK_BYTES):
+                    total_bytes += len(chunk)
+                    if total_bytes > settings.max_file_size_bytes:
+                        raise ValueError("The image exceeded the maximum download size.")
+                    destination.write(chunk)
+        temporary_file.replace(destination_file)
+        return make_image_iphone_compatible(destination_file)
+    except (OSError, ValueError):
+        temporary_file.unlink(missing_ok=True)
+        destination_file.unlink(missing_ok=True)
+        return None
+
+
+def download_page_images(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
+    image_files: list[Path] = []
+    for image_url in page_image_urls(source_url):
+        if len(image_files) >= max_items:
+            break
+        image_file = job_directory / f"image-{len(image_files) + 1:03d}.jpg"
+        downloaded_image = download_page_image(image_url, image_file)
+        if downloaded_image is not None:
+            image_files.append(downloaded_image)
+    return image_files
+
+
+def download_media(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
+    downloader_options = {"outtmpl": str(job_directory / "%(autonumber)03d-%(id)s.%(ext)s"), "format": "bv*+ba/b", "merge_output_format": "mp4", "noplaylist": False, "playlistend": max_items, "max_filesize": settings.max_file_size_bytes, "nopart": True, "continuedl": False, "overwrites": False, "quiet": True, "no_warnings": True, "noprogress": True, "ignoreerrors": True, "retries": 2, "fragment_retries": 2, "socket_timeout": 30, "concurrent_fragment_downloads": 2, "restrictfilenames": True, "js_runtimes": {"node": {}}}
+    downloader = PublicOnlyYoutubeDL(downloader_options)
+    try:
+        with downloader:
             downloader.download([source_url])
     except yt_dlp.utils.DownloadError as error:
         if is_retired_x_amplify_error(str(error)):
             raise DownloadFailed("This X post references an old video that X no longer serves.") from error
-        raise DownloadFailed from error
-    video_files = list_video_files(job_directory)
-    if not video_files:
+    media_files = list_media_files(job_directory)
+    if media_files:
+        return [make_media_iphone_compatible(media_file) for media_file in media_files]
+    image_files = download_page_images(source_url, job_directory, max_items)
+    if not image_files:
         if any(is_retired_x_amplify_error(error_message) for error_message in downloader.download_errors):
             raise DownloadFailed("This X post references an old video that X no longer serves.")
         raise DownloadFailed
-    return [make_video_iphone_compatible(video_file) for video_file in video_files]
+    return image_files
 
 
 def write_job_manifest(job_directory: Path, expires_at: float) -> None:
@@ -262,9 +409,9 @@ def request_base_url(request: Request) -> str:
     return settings.public_base_url or str(request.base_url).rstrip("/")
 
 
-def file_link(request: Request, job_id: str, video_file: Path) -> DownloadFile:
-    download_path = f"/v1/files/{job_id}/{video_file.name}"
-    return DownloadFile(name=video_file.name, download_path=download_path, download_url=f"{request_base_url(request)}{download_path}")
+def file_link(request: Request, job_id: str, media_file: Path) -> DownloadFile:
+    download_path = f"/v1/files/{job_id}/{media_file.name}"
+    return DownloadFile(name=media_file.name, download_path=download_path, download_url=f"{request_base_url(request)}{download_path}")
 
 
 def get_job_directory(job_id: str) -> Path:
@@ -297,16 +444,16 @@ async def create_download(download_request: DownloadRequest, request: Request) -
     job_directory.mkdir(parents=True, exist_ok=False)
     try:
         async with download_semaphore:
-            video_files = await asyncio.to_thread(download_videos, download_request.url, job_directory, max_items)
+            media_files = await asyncio.to_thread(download_media, download_request.url, job_directory, max_items)
     except DownloadFailed as error:
         shutil.rmtree(job_directory, ignore_errors=True)
-        raise HTTPException(status_code=422, detail=str(error) or "No public downloadable video was found at that URL.") from error
+        raise HTTPException(status_code=422, detail=str(error) or "No public downloadable image or video was found at that URL.") from error
     except Exception as error:
         shutil.rmtree(job_directory, ignore_errors=True)
         raise HTTPException(status_code=502, detail="The downloader could not complete the request.") from error
     expires_at_epoch = time.time() + settings.retention_seconds
     write_job_manifest(job_directory, expires_at_epoch)
-    return DownloadResponse(job_id=job_id, expires_at=datetime.fromtimestamp(expires_at_epoch, timezone.utc), files=[file_link(request, job_id, video_file) for video_file in video_files])
+    return DownloadResponse(job_id=job_id, expires_at=datetime.fromtimestamp(expires_at_epoch, timezone.utc), files=[file_link(request, job_id, media_file) for media_file in media_files])
 
 
 @app.post("/v1/shortcut-downloads", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
@@ -327,7 +474,7 @@ async def get_file(job_id: str, filename: str) -> FileResponse:
         raise HTTPException(status_code=410, detail="This temporary download has expired.")
     if Path(filename).name != filename:
         raise HTTPException(status_code=404, detail="Download not found.")
-    video_file = (job_directory / filename).resolve()
-    if video_file.parent != job_directory.resolve() or not video_file.is_file() or not is_video_file(video_file):
+    media_file = (job_directory / filename).resolve()
+    if media_file.parent != job_directory.resolve() or not media_file.is_file() or not is_media_file(media_file):
         raise HTTPException(status_code=404, detail="Download not found.")
-    return FileResponse(video_file, media_type=mimetypes.guess_type(video_file.name)[0] or "application/octet-stream", filename=video_file.name)
+    return FileResponse(media_file, media_type=mimetypes.guess_type(media_file.name)[0] or "application/octet-stream", filename=media_file.name)

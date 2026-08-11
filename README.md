@@ -1,6 +1,6 @@
 # Docker Video URL Download
 
-`Docker-VideoURLDownload` is a FastAPI container that accepts a public webpage or media URL, asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract every downloadable video entry it finds, and returns temporary download URLs for the completed files.
+`Docker-VideoURLDownload` is a FastAPI container that accepts a public webpage or media URL, asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) to extract every downloadable image and video entry it finds, and returns temporary download URLs for the completed files. If a public webpage has no yt-dlp media result, it also looks for public Open Graph/Twitter image metadata and page images.
 
 yt-dlp is the maintained open-source extractor chosen for this service because it supports thousands of sites, including dedicated YouTube, X/Twitter, and Instagram extractors as well as generic/embed extraction. Provider support changes over time, so a site is only confirmed when a live request succeeds. The image includes `ffmpeg` and Node.js 22; the supported `yt-dlp[default]` install brings in its matched `yt-dlp-ejs` component for YouTube JavaScript challenges.
 
@@ -12,7 +12,9 @@ yt-dlp is the maintained open-source extractor chosen for this service because i
 {"url":"https://example.com/page-with-video","max_items":25}
 ```
 
-Send `X-API-Key` unless `ALLOW_ANONYMOUS=true` has been deliberately enabled. The response contains one `download_path` and `download_url` for every video file actually downloaded. The URLs are valid for one hour after download completion, then the job directory is removed. `GET /health` is unauthenticated and reports the configured retention period. Interactive OpenAPI documentation is available at `/docs`.
+Send `X-API-Key` unless `ALLOW_ANONYMOUS=true` has been deliberately enabled. The response contains one `download_path` and `download_url` for every image or video file actually downloaded. The URLs are valid for one hour after download completion, then the job directory is removed. `GET /health` is unauthenticated and reports the configured retention period. Interactive OpenAPI documentation is available at `/docs`.
+
+`POST /v1/shortcut-downloads` has the same request shape and is intended for the included iPhone Shortcut. It always returns a JSON object with `success`, `files`, and (on failure) `error`, allowing the Shortcut to show a real failure state instead of treating an empty result as success.
 
 `max_items` is optional and cannot exceed `MAX_ITEMS_PER_REQUEST` (50 by default). This is an explicit resource guard for large playlists or pages; raise that setting when the operator wants a larger complete collection.
 
