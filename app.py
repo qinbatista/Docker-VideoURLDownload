@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 
 VIDEO_SUFFIXES = {".3gp", ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".ts", ".webm"}
+VIDEO_MIME_PREFIX = "video/"
 
 
 def positive_integer(name: str, default: int) -> int:
@@ -100,11 +101,15 @@ def validate_public_http_url(candidate_url: str) -> None:
 def request_url(request: object) -> str:
     for attribute_name in ("full_url", "url"):
         candidate_url = getattr(request, attribute_name, None)
+        if isinstance(candidate_url, bytes):
+            return candidate_url.decode("utf-8", errors="replace")
         if isinstance(candidate_url, str):
             return candidate_url
     get_full_url = getattr(request, "get_full_url", None)
     if callable(get_full_url):
         candidate_url = get_full_url()
+        if isinstance(candidate_url, bytes):
+            return candidate_url.decode("utf-8", errors="replace")
         if isinstance(candidate_url, str):
             return candidate_url
     raise ValueError("A valid public HTTP or HTTPS URL is required.")
@@ -117,7 +122,17 @@ class PublicOnlyYoutubeDL(yt_dlp.YoutubeDL):
 
 
 def list_video_files(job_directory: Path) -> list[Path]:
-    return [candidate for candidate in sorted(job_directory.iterdir()) if candidate.is_file() and candidate.suffix.lower() in VIDEO_SUFFIXES]
+    return [candidate for candidate in sorted(job_directory.iterdir()) if candidate.is_file() and is_video_file(candidate)]
+
+
+def is_video_file(candidate: Path) -> bool:
+    if candidate.name == "manifest.json":
+        return False
+    suffix = candidate.suffix.lower()
+    if suffix in VIDEO_SUFFIXES:
+        return True
+    media_type = mimetypes.guess_type(candidate.name)[0]
+    return media_type is not None and media_type.startswith(VIDEO_MIME_PREFIX)
 
 
 def download_videos(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
@@ -126,6 +141,9 @@ def download_videos(source_url: str, job_directory: Path, max_items: int) -> lis
         with PublicOnlyYoutubeDL(downloader_options) as downloader:
             downloader.download([source_url])
     except yt_dlp.utils.DownloadError as error:
+        error_text = str(error).lower()
+        if "amp.twimg.com" in error_text and "domain not found" in error_text:
+            raise DownloadFailed("This X post references an old video that X no longer serves.") from error
         raise DownloadFailed from error
     video_files = list_video_files(job_directory)
     if not video_files:
@@ -235,7 +253,7 @@ async def create_download(download_request: DownloadRequest, request: Request) -
             video_files = await asyncio.to_thread(download_videos, download_request.url, job_directory, max_items)
     except DownloadFailed as error:
         shutil.rmtree(job_directory, ignore_errors=True)
-        raise HTTPException(status_code=422, detail="No public downloadable video was found at that URL.") from error
+        raise HTTPException(status_code=422, detail=str(error) or "No public downloadable video was found at that URL.") from error
     except Exception as error:
         shutil.rmtree(job_directory, ignore_errors=True)
         raise HTTPException(status_code=502, detail="The downloader could not complete the request.") from error
@@ -254,6 +272,6 @@ async def get_file(job_id: str, filename: str) -> FileResponse:
     if Path(filename).name != filename:
         raise HTTPException(status_code=404, detail="Download not found.")
     video_file = (job_directory / filename).resolve()
-    if video_file.parent != job_directory.resolve() or not video_file.is_file() or video_file.suffix.lower() not in VIDEO_SUFFIXES:
+    if video_file.parent != job_directory.resolve() or not video_file.is_file() or not is_video_file(video_file):
         raise HTTPException(status_code=404, detail="Download not found.")
     return FileResponse(video_file, media_type=mimetypes.guess_type(video_file.name)[0] or "application/octet-stream", filename=video_file.name)
