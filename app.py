@@ -159,9 +159,10 @@ def make_video_iphone_compatible(video_file: Path) -> Path:
         audio_streams = [stream for stream in streams if stream["codec_type"] == "audio"]
         if not video_streams:
             raise ValueError("The downloaded file did not contain a video stream.")
-        if video_file.suffix.lower() == ".mp4" and all(stream["codec_name"] == "h264" and stream.get("pix_fmt") == "yuv420p" for stream in video_streams) and all(stream["codec_name"] == "aac" for stream in audio_streams):
-            return video_file
-        subprocess.run(["ffmpeg", "-y", "-i", str(video_file), "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(iphone_video_file)], check=True, capture_output=True, text=True, timeout=1800)
+        is_iphone_compatible = video_file.suffix.lower() == ".mp4" and all(stream["codec_name"] == "h264" and stream.get("pix_fmt") == "yuv420p" for stream in video_streams) and all(stream["codec_name"] == "aac" for stream in audio_streams)
+        codec_arguments = ["-c:v", "copy", "-c:a", "copy"] if is_iphone_compatible else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+        download_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        subprocess.run(["ffmpeg", "-y", "-i", str(video_file), "-map", "0:v:0", "-map", "0:a:0?", *codec_arguments, "-metadata", f"creation_time={download_time}", "-movflags", "+faststart", str(iphone_video_file)], check=True, capture_output=True, text=True, timeout=1800)
         if not iphone_video_file.is_file() or iphone_video_file.stat().st_size == 0:
             raise ValueError("FFmpeg did not create a video file.")
         destination_file = video_file.with_suffix(".mp4")

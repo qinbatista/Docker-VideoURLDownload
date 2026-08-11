@@ -40,18 +40,25 @@ def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
     assert app.list_video_files(tmp_path) == [video_file]
 
 
-def test_iphone_compatible_mp4_skips_transcoding(monkeypatch, tmp_path) -> None:
+def test_iphone_compatible_mp4_is_remuxed_with_the_download_time(monkeypatch, tmp_path) -> None:
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(b"original")
 
     def fake_run(arguments, **_kwargs):
-        assert arguments[0] == "ffprobe"
-        return SimpleNamespace(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"}, {"codec_type": "audio", "codec_name": "aac"}]}))
+        if arguments[0] == "ffprobe":
+            return SimpleNamespace(stdout=json.dumps({"streams": [{"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"}, {"codec_type": "audio", "codec_name": "aac"}]}))
+        assert arguments[:2] == ["ffmpeg", "-y"]
+        assert "libx264" not in arguments
+        assert arguments[arguments.index("-c:v") + 1] == "copy"
+        assert arguments[arguments.index("-c:a") + 1] == "copy"
+        assert any(argument.startswith("creation_time=") for argument in arguments)
+        Path(arguments[-1]).write_bytes(b"remuxed")
+        return SimpleNamespace(stdout="")
 
     monkeypatch.setattr(app.subprocess, "run", fake_run)
 
     assert app.make_video_iphone_compatible(video_file) == video_file
-    assert video_file.read_bytes() == b"original"
+    assert video_file.read_bytes() == b"remuxed"
 
 
 def test_vp9_mp4_is_transcoded_to_iphone_compatible_mp4(monkeypatch, tmp_path) -> None:
@@ -64,6 +71,7 @@ def test_vp9_mp4_is_transcoded_to_iphone_compatible_mp4(monkeypatch, tmp_path) -
         assert arguments[:2] == ["ffmpeg", "-y"]
         assert "libx264" in arguments
         assert "yuv420p" in arguments
+        assert any(argument.startswith("creation_time=") for argument in arguments)
         Path(arguments[-1]).write_bytes(b"h264")
         return SimpleNamespace(stdout="")
 
