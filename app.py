@@ -117,7 +117,7 @@ def request_url(request: object) -> str:
 
 def is_retired_x_amplify_error(error_text: str) -> bool:
     normalized_error = error_text.lower()
-    return "amp.twimg.com" in normalized_error and "domain not found" in normalized_error
+    return ("twitter:amplify" in normalized_error or "amp.twimg.com" in normalized_error) and "domain not found" in normalized_error
 
 
 class PublicOnlyYoutubeDL(yt_dlp.YoutubeDL):

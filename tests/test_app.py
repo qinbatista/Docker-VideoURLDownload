@@ -38,7 +38,7 @@ def test_list_video_files_accepts_ogv_video_files(tmp_path) -> None:
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
     class FailedYoutubeDL:
-        download_errors = ["ERROR: [twitter:amplify] Unable to download webpage: HTTP Error 500: Domain Not Found (https://amp.twimg.com/v/example)"]
+        download_errors = ["ERROR: [twitter:amplify] example: Unable to download webpage: HTTP Error 500: Domain Not Found"]
 
         def __init__(self, *_args, **_kwargs) -> None:
             pass
