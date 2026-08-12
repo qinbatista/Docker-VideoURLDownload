@@ -9,6 +9,13 @@ def test_api_uses_the_published_image_and_watchtower_label() -> None:
 
     assert 'image: "${API_IMAGE:-ghcr.io/qinbatista/video-url-download:latest}"' in compose
     assert 'com.centurylinklabs.watchtower.enable: "true"' in compose
+    assert "stop_grace_period: 15m" in compose
+
+
+def test_api_waits_for_active_downloads_during_a_graceful_shutdown() -> None:
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text()
+
+    assert '"--timeout-graceful-shutdown", "900"' in dockerfile
 
 
 def test_workflow_publishes_a_multiarch_api_image() -> None:

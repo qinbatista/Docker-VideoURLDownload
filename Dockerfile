@@ -20,7 +20,7 @@ RUN mkdir -p /app/data && chown app:app /app/data
 EXPOSE 8787
 
 ENTRYPOINT ["python", "entrypoint.py"]
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8787", "--proxy-headers"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8787", "--proxy-headers", "--timeout-graceful-shutdown", "900"]
 
 FROM runtime AS test
 

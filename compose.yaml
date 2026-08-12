@@ -8,6 +8,7 @@ services:
       target: runtime
     container_name: video-url-download
     restart: unless-stopped
+    stop_grace_period: 15m
     env_file:
       - .env
     dns:

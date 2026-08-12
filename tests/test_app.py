@@ -160,7 +160,7 @@ def test_download_media_accepts_a_static_image_from_yt_dlp(monkeypatch, tmp_path
     assert app.download_media("https://images.example/photo.jpg", tmp_path, 1) == [tmp_path / "001-photo.jpg"]
 
 
-def test_simultaneous_shortcut_jobs_keep_their_media_in_isolated_directories(monkeypatch, tmp_path) -> None:
+def test_simultaneous_shortcut_jobs_are_isolated_and_queue_after_two(monkeypatch, tmp_path) -> None:
     async def verify_isolated_jobs() -> list[app.DownloadResponse]:
         recorded_job_directories: list[Path] = []
         release_downloads = threading.Event()
@@ -174,9 +174,9 @@ def test_simultaneous_shortcut_jobs_keep_their_media_in_isolated_directories(mon
             with download_count_lock:
                 active_download_count += 1
                 peak_download_count = max(peak_download_count, active_download_count)
+                recorded_job_directories.append(job_directory)
                 if active_download_count == 2:
                     two_downloads_started.set()
-            recorded_job_directories.append(job_directory)
             assert release_downloads.wait(timeout=1)
             media_file = job_directory / "clip.mp4"
             media_file.write_bytes(b"video")
@@ -191,11 +191,15 @@ def test_simultaneous_shortcut_jobs_keep_their_media_in_isolated_directories(mon
         request = SimpleNamespace(base_url="https://downloads.example/")
         youtube_download = asyncio.create_task(app.create_download(app.DownloadRequest(url="https://youtube.com/watch?v=example"), request))
         instagram_download = asyncio.create_task(app.create_download(app.DownloadRequest(url="https://instagram.com/reel/example"), request))
+        x_download = asyncio.create_task(app.create_download(app.DownloadRequest(url="https://x.com/example/status/1"), request))
         assert await asyncio.to_thread(two_downloads_started.wait, 1)
         assert peak_download_count == 2
+        assert len(recorded_job_directories) == 2
+        await asyncio.sleep(0.05)
+        assert len(recorded_job_directories) == 2
         release_downloads.set()
-        downloads = await asyncio.gather(youtube_download, instagram_download)
-        assert len(set(recorded_job_directories)) == 2
+        downloads = await asyncio.gather(youtube_download, instagram_download, x_download)
+        assert len(set(recorded_job_directories)) == 3
         assert all(job_directory.parent == app.jobs_directory for job_directory in recorded_job_directories)
         return downloads
 
