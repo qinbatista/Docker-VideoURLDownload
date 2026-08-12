@@ -473,7 +473,6 @@ async def health() -> dict[str, int | str]:
     return {"status": "ok", "retention_seconds": settings.retention_seconds}
 
 
-@app.post("/v1/downloads", response_model=DownloadResponse, status_code=201, dependencies=[Depends(require_api_key)])
 async def create_download(download_request: DownloadRequest, request: Request) -> DownloadResponse:
     try:
         validate_public_http_url(download_request.url)

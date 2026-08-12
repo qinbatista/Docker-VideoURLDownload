@@ -6,7 +6,7 @@ yt-dlp is the maintained open-source extractor chosen for this service because i
 
 ## API contract
 
-`POST /v1/downloads` accepts JSON:
+`POST /video-download` accepts JSON:
 
 ```json
 {"url":"https://example.com/page-with-video","max_items":25}

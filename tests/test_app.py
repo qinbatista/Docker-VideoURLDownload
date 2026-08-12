@@ -263,6 +263,14 @@ def test_pending_shortcut_response_keeps_an_explicit_empty_files_array() -> None
     assert "error" not in response.model_dump(exclude_none=True)
 
 
+def test_public_media_routes_use_only_video_download_prefix() -> None:
+    public_routes = {route.path for route in app.app.routes if getattr(route, "methods", set()) & {"GET", "POST"}}
+
+    assert "/video-download" in public_routes
+    assert "/v1/downloads" not in public_routes
+    assert "/v1/shortcut-downloads" not in public_routes
+
+
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
     class FailedYoutubeDL:
         download_errors = ["ERROR: [twitter:amplify] example: Unable to download webpage: HTTP Error 500: Domain Not Found"]
