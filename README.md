@@ -14,7 +14,7 @@ yt-dlp is the maintained open-source extractor chosen for this service because i
 
 Send `X-API-Key` unless `ALLOW_ANONYMOUS=true` has been deliberately enabled. The response contains one `download_path` and `download_url` for every image or video file actually downloaded. The URLs are valid for one hour after download completion, then the job directory is removed. `GET /health` is unauthenticated and reports the configured retention period. Interactive OpenAPI documentation is available at `/docs`.
 
-`POST /v1/shortcut-downloads` has the same request shape and is intended for the included iPhone Shortcut. It always returns a JSON object with `success`, `files`, and (on failure) `error`, allowing the Shortcut to show a real failure state instead of treating an empty result as success.
+`POST /v1/shortcut-downloads` has the same request shape and is intended for the iPhone Shortcut. It immediately returns `success`, a `job_id`, and `status: "queued"`; poll `GET /v1/shortcut-downloads/{job_id}` until it returns `status: "completed"` with `files`, or `status: "failed"` with `error`. This prevents Shortcuts from timing out while yt-dlp or FFmpeg work. Completed file URLs remain valid for one hour; queued, active, and failed jobs remain isolated in their own job directory.
 
 `max_items` is optional and cannot exceed `MAX_ITEMS_PER_REQUEST` (50 by default). This is an explicit resource guard for large playlists or pages; raise that setting when the operator wants a larger complete collection.
 

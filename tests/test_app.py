@@ -208,17 +208,44 @@ def test_simultaneous_shortcut_jobs_are_isolated_and_queue_after_two(monkeypatch
     assert all(download.files[0].download_path.startswith(f"/v1/files/{download.job_id}/") for download in downloads)
 
 
-def test_shortcut_download_returns_a_failure_message_instead_of_an_empty_success(monkeypatch) -> None:
-    async def fail_download(*_args, **_kwargs):
-        raise app.HTTPException(status_code=422, detail="No public downloadable video was found at that URL.")
+def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatch, tmp_path) -> None:
+    async def verify_shortcut_job() -> None:
+        download_started = threading.Event()
+        release_download = threading.Event()
 
-    monkeypatch.setattr(app, "create_download", fail_download)
+        def fake_download_media(_source_url: str, job_directory: Path, _max_items: int) -> list[Path]:
+            download_started.set()
+            assert release_download.wait(timeout=1)
+            media_file = job_directory / "clip.mp4"
+            media_file.write_bytes(b"video")
+            return [media_file]
 
-    response = asyncio.run(app.create_shortcut_download(app.DownloadRequest(url="https://instagram.com/reel/example"), SimpleNamespace()))
+        monkeypatch.setattr(app, "jobs_directory", tmp_path / "jobs")
+        monkeypatch.setattr(app, "shortcut_job_tasks", set())
+        monkeypatch.setattr(app, "validate_public_http_url", lambda _url: None)
+        monkeypatch.setattr(app, "download_media", fake_download_media)
+        request = SimpleNamespace(base_url="https://downloads.example/")
+        started_response = await app.create_shortcut_download(app.DownloadRequest(url="https://instagram.com/reel/example"), request)
+        assert started_response.success is True
+        assert started_response.status == "queued"
+        assert started_response.job_id is not None
+        assert await asyncio.to_thread(download_started.wait, 1)
+        in_progress_response = await app.get_shortcut_download(started_response.job_id, request)
+        assert in_progress_response.success is True
+        assert in_progress_response.status == "downloading"
+        release_download.set()
+        for _ in range(20):
+            completed_response = await app.get_shortcut_download(started_response.job_id, request)
+            if completed_response.status == "completed":
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("The queued Shortcut download did not complete.")
+        assert completed_response.success is True
+        assert completed_response.status == "completed"
+        assert completed_response.files[0].download_path.startswith(f"/v1/files/{started_response.job_id}/")
 
-    assert response.success is False
-    assert response.files == []
-    assert response.error == "No public downloadable video was found at that URL."
+    asyncio.run(verify_shortcut_job())
 
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
@@ -253,3 +280,27 @@ def test_expired_job_cleanup_removes_only_expired_job(tmp_path) -> None:
     assert app.cleanup_expired_jobs(tmp_path) == ["expired"]
     assert not expired_job.exists()
     assert active_job.exists()
+
+
+def test_expired_job_cleanup_preserves_a_queued_shortcut_job(tmp_path) -> None:
+    queued_job = tmp_path / "queued"
+    queued_job.mkdir()
+    app.write_job_manifest(queued_job, None, status="queued")
+
+    assert app.cleanup_expired_jobs(tmp_path, now_epoch=time.time() + app.settings.retention_seconds + 1) == []
+    assert queued_job.exists()
+
+
+def test_server_restart_marks_an_unfinished_shortcut_job_as_failed(monkeypatch, tmp_path) -> None:
+    queued_job = tmp_path / "jobs" / "queued"
+    queued_job.mkdir(parents=True)
+    app.write_job_manifest(queued_job, None, status="downloading")
+    monkeypatch.setattr(app, "jobs_directory", tmp_path / "jobs")
+
+    app.recover_unfinished_shortcut_jobs()
+
+    manifest = app.read_job_manifest(queued_job)
+    assert manifest is not None
+    assert manifest["status"] == "failed"
+    assert manifest["error"] == "The server restarted before this download could finish."
+    assert app.read_job_expiry(queued_job) is not None

@@ -60,6 +60,7 @@ class Settings:
 settings = Settings(data_directory=Path(os.getenv("DATA_DIR", "/app/data")), retention_seconds=positive_integer("RETENTION_SECONDS", 3600), cleanup_interval_seconds=positive_integer("CLEANUP_INTERVAL_SECONDS", 60), max_items_per_request=positive_integer("MAX_ITEMS_PER_REQUEST", 50), max_file_size_bytes=positive_integer("MAX_FILE_SIZE_BYTES", 2147483648), max_concurrent_downloads=positive_integer("MAX_CONCURRENT_DOWNLOADS", 2), api_key=os.getenv("API_KEY") or None, allow_anonymous=os.getenv("ALLOW_ANONYMOUS", "false").strip().lower() in {"1", "true", "yes"}, public_base_url=os.getenv("PUBLIC_BASE_URL", "").rstrip("/") or None)
 jobs_directory = settings.data_directory / "jobs"
 download_semaphore = asyncio.Semaphore(settings.max_concurrent_downloads)
+shortcut_job_tasks: set[asyncio.Task[None]] = set()
 
 
 class DownloadFailed(Exception):
@@ -85,6 +86,9 @@ class DownloadResponse(BaseModel):
 
 class ShortcutDownloadResponse(BaseModel):
     success: bool
+    job_id: str | None = None
+    status: str
+    expires_at: datetime | None = None
     error: str | None = None
     files: list[DownloadFile] = Field(default_factory=list)
 
@@ -346,16 +350,25 @@ def download_media(source_url: str, job_directory: Path, max_items: int) -> list
     return image_files
 
 
-def write_job_manifest(job_directory: Path, expires_at: float) -> None:
+def write_job_manifest(job_directory: Path, expires_at: float | None, status: str = "completed", error: str | None = None) -> None:
     temporary_manifest = job_directory / "manifest.tmp"
-    temporary_manifest.write_text(json.dumps({"expires_at": expires_at}), encoding="utf-8")
+    temporary_manifest.write_text(json.dumps({"expires_at": expires_at, "status": status, "error": error}), encoding="utf-8")
     temporary_manifest.replace(job_directory / "manifest.json")
+
+
+def read_job_manifest(job_directory: Path) -> dict[str, object] | None:
+    try:
+        manifest = json.loads((job_directory / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return manifest if isinstance(manifest, dict) else None
 
 
 def read_job_expiry(job_directory: Path) -> float | None:
     try:
-        return float(json.loads((job_directory / "manifest.json").read_text(encoding="utf-8"))["expires_at"])
-    except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
+        manifest = read_job_manifest(job_directory)
+        return float(manifest["expires_at"]) if manifest is not None else None
+    except (TypeError, ValueError, KeyError):
         return None
 
 
@@ -368,11 +381,25 @@ def cleanup_expired_jobs(jobs_root: Path | None = None, now_epoch: float | None 
     for candidate in active_jobs_root.iterdir():
         if not candidate.is_dir() or candidate.is_symlink():
             continue
+        if read_job_manifest(candidate) is not None and read_job_expiry(candidate) is None:
+            continue
         expires_at = read_job_expiry(candidate) or (candidate.stat().st_mtime + settings.retention_seconds)
         if expires_at <= now_value:
             shutil.rmtree(candidate, ignore_errors=True)
             removed_job_ids.append(candidate.name)
     return removed_job_ids
+
+
+def recover_unfinished_shortcut_jobs() -> None:
+    if not jobs_directory.exists():
+        return
+    for job_directory in jobs_directory.iterdir():
+        if not job_directory.is_dir() or job_directory.is_symlink():
+            continue
+        manifest = read_job_manifest(job_directory)
+        if manifest is None or manifest.get("status") not in {"queued", "downloading"}:
+            continue
+        write_job_manifest(job_directory, time.time() + settings.retention_seconds, status="failed", error="The server restarted before this download could finish.")
 
 
 async def cleanup_loop() -> None:
@@ -387,6 +414,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError("API_KEY must be configured unless ALLOW_ANONYMOUS=true.")
     ensure_data_paths()
     cleanup_expired_jobs()
+    recover_unfinished_shortcut_jobs()
     cleanup_task = asyncio.create_task(cleanup_loop())
     try:
         yield
@@ -394,6 +422,8 @@ async def lifespan(_: FastAPI):
         cleanup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
+        if shortcut_job_tasks:
+            await asyncio.gather(*tuple(shortcut_job_tasks), return_exceptions=True)
 
 
 app = FastAPI(title="Docker Video URL Download", version="1.0.0", lifespan=lifespan)
@@ -457,13 +487,58 @@ async def create_download(download_request: DownloadRequest, request: Request) -
     return DownloadResponse(job_id=job_id, expires_at=datetime.fromtimestamp(expires_at_epoch, timezone.utc), files=[file_link(request, job_id, media_file) for media_file in media_files])
 
 
+async def process_shortcut_download(download_request: DownloadRequest, job_directory: Path, max_items: int) -> None:
+    try:
+        async with download_semaphore:
+            write_job_manifest(job_directory, None, status="downloading")
+            await asyncio.to_thread(download_media, download_request.url, job_directory, max_items)
+    except DownloadFailed as error:
+        write_job_manifest(job_directory, time.time() + settings.retention_seconds, status="failed", error=str(error) or "No public downloadable image or video was found at that URL.")
+    except Exception:
+        write_job_manifest(job_directory, time.time() + settings.retention_seconds, status="failed", error="The downloader could not complete the request.")
+    else:
+        write_job_manifest(job_directory, time.time() + settings.retention_seconds)
+
+
 @app.post("/v1/shortcut-downloads", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
 async def create_shortcut_download(download_request: DownloadRequest, request: Request) -> ShortcutDownloadResponse:
     try:
-        download_response = await create_download(download_request, request)
-    except HTTPException as error:
-        return ShortcutDownloadResponse(success=False, error=str(error.detail))
-    return ShortcutDownloadResponse(success=True, files=download_response.files)
+        validate_public_http_url(download_request.url)
+    except ValueError as error:
+        return ShortcutDownloadResponse(success=False, status="failed", error=str(error))
+    max_items = download_request.max_items or settings.max_items_per_request
+    if max_items > settings.max_items_per_request:
+        return ShortcutDownloadResponse(success=False, status="failed", error=f"max_items cannot exceed {settings.max_items_per_request}.")
+    job_id = uuid.uuid4().hex
+    job_directory = jobs_directory / job_id
+    job_directory.mkdir(parents=True, exist_ok=False)
+    write_job_manifest(job_directory, None, status="queued")
+    shortcut_task = asyncio.create_task(process_shortcut_download(download_request, job_directory, max_items))
+    shortcut_job_tasks.add(shortcut_task)
+    shortcut_task.add_done_callback(shortcut_job_tasks.discard)
+    return ShortcutDownloadResponse(success=True, job_id=job_id, status="queued")
+
+
+@app.get("/v1/shortcut-downloads/{job_id}", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
+async def get_shortcut_download(job_id: str, request: Request) -> ShortcutDownloadResponse:
+    job_directory = get_job_directory(job_id)
+    if not job_directory.is_dir():
+        raise HTTPException(status_code=404, detail="Download not found.")
+    manifest = read_job_manifest(job_directory)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Download not found.")
+    expires_at_epoch = read_job_expiry(job_directory)
+    if expires_at_epoch is not None and expires_at_epoch <= time.time():
+        shutil.rmtree(job_directory, ignore_errors=True)
+        raise HTTPException(status_code=410, detail="This temporary download has expired.")
+    status = str(manifest.get("status", "completed"))
+    expires_at = datetime.fromtimestamp(expires_at_epoch, timezone.utc) if expires_at_epoch is not None else None
+    if status == "completed":
+        media_files = list_media_files(job_directory)
+        if not media_files:
+            return ShortcutDownloadResponse(success=False, job_id=job_id, status="failed", expires_at=expires_at, error="The server completed the download without any media files.")
+        return ShortcutDownloadResponse(success=True, job_id=job_id, status=status, expires_at=expires_at, files=[file_link(request, job_id, media_file) for media_file in media_files])
+    return ShortcutDownloadResponse(success=False if status == "failed" else True, job_id=job_id, status=status, expires_at=expires_at, error=manifest.get("error") if isinstance(manifest.get("error"), str) else None)
 
 
 @app.get("/v1/files/{job_id}/{filename}")
