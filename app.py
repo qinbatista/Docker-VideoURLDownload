@@ -90,10 +90,10 @@ class ShortcutDownloadResponse(BaseModel):
     status: str
     poll_url: str | None = None
     expires_at: datetime | None = None
-    # Shortcuts treats an omitted dictionary value as an exceptional result
-    # and can treat empty text as a value.  Keep a concrete empty list until
-    # a job actually fails, matching the reliable `files: []` branch below.
-    error: str | list[str] = Field(default_factory=list)
+    # An error is meaningful only once a job has failed.  The Shortcut keeps
+    # the complete poll dictionary in a named variable, so an omitted error
+    # value does not interrupt its pending-download loop.
+    error: str | None = None
     # Keep this present even while the background job is pending.  Shortcuts
     # handles an empty JSON list reliably, whereas a missing key can abort a
     # repeat before it reaches the next poll.
