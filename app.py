@@ -91,7 +91,10 @@ class ShortcutDownloadResponse(BaseModel):
     poll_url: str | None = None
     expires_at: datetime | None = None
     error: str | None = None
-    files: list[DownloadFile] | None = None
+    # Keep this present even while the background job is pending.  Shortcuts
+    # handles an empty JSON list reliably, whereas a missing key can abort a
+    # repeat before it reaches the next poll.
+    files: list[DownloadFile] = Field(default_factory=list)
 
 
 def ensure_data_paths() -> None:

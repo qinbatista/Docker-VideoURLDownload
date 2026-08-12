@@ -229,13 +229,13 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
         assert started_response.success is True
         assert started_response.status == "queued"
         assert started_response.job_id is not None
-        assert started_response.files is None
+        assert started_response.files == []
         assert started_response.poll_url == f"https://downloads.example/v1/shortcut-downloads/{started_response.job_id}"
         assert await asyncio.to_thread(download_started.wait, 1)
         in_progress_response = await app.get_shortcut_download(started_response.job_id, request)
         assert in_progress_response.success is True
         assert in_progress_response.status == "downloading"
-        assert in_progress_response.files is None
+        assert in_progress_response.files == []
         assert in_progress_response.poll_url == started_response.poll_url
         release_download.set()
         for _ in range(20):
@@ -248,10 +248,16 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
         assert completed_response.success is True
         assert completed_response.status == "completed"
         assert completed_response.poll_url == started_response.poll_url
-        assert completed_response.files is not None
+        assert completed_response.files
         assert completed_response.files[0].download_path.startswith(f"/v1/files/{started_response.job_id}/")
 
     asyncio.run(verify_shortcut_job())
+
+
+def test_pending_shortcut_response_keeps_an_explicit_empty_files_array() -> None:
+    response = app.ShortcutDownloadResponse(success=True, job_id="job", status="queued", poll_url="https://downloads.example/v1/shortcut-downloads/job")
+
+    assert response.model_dump(exclude_none=True)["files"] == []
 
 
 def test_legacy_x_amplify_failure_explains_that_x_removed_the_video(monkeypatch, tmp_path) -> None:
