@@ -88,9 +88,10 @@ class ShortcutDownloadResponse(BaseModel):
     success: bool
     job_id: str | None = None
     status: str
+    poll_url: str | None = None
     expires_at: datetime | None = None
     error: str | None = None
-    files: list[DownloadFile] = Field(default_factory=list)
+    files: list[DownloadFile] | None = None
 
 
 def ensure_data_paths() -> None:
@@ -445,6 +446,10 @@ def file_link(request: Request, job_id: str, media_file: Path) -> DownloadFile:
     return DownloadFile(name=media_file.name, download_path=download_path, download_url=f"{request_base_url(request)}{download_path}")
 
 
+def shortcut_poll_url(request: Request, job_id: str) -> str:
+    return f"{request_base_url(request)}/v1/shortcut-downloads/{job_id}"
+
+
 def get_job_directory(job_id: str) -> Path:
     try:
         uuid.UUID(hex=job_id)
@@ -500,7 +505,7 @@ async def process_shortcut_download(download_request: DownloadRequest, job_direc
         write_job_manifest(job_directory, time.time() + settings.retention_seconds)
 
 
-@app.post("/v1/shortcut-downloads", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
+@app.post("/v1/shortcut-downloads", response_model=ShortcutDownloadResponse, response_model_exclude_none=True, dependencies=[Depends(require_api_key)])
 async def create_shortcut_download(download_request: DownloadRequest, request: Request) -> ShortcutDownloadResponse:
     try:
         validate_public_http_url(download_request.url)
@@ -516,10 +521,10 @@ async def create_shortcut_download(download_request: DownloadRequest, request: R
     shortcut_task = asyncio.create_task(process_shortcut_download(download_request, job_directory, max_items))
     shortcut_job_tasks.add(shortcut_task)
     shortcut_task.add_done_callback(shortcut_job_tasks.discard)
-    return ShortcutDownloadResponse(success=True, job_id=job_id, status="queued")
+    return ShortcutDownloadResponse(success=True, job_id=job_id, status="queued", poll_url=shortcut_poll_url(request, job_id))
 
 
-@app.get("/v1/shortcut-downloads/{job_id}", response_model=ShortcutDownloadResponse, dependencies=[Depends(require_api_key)])
+@app.get("/v1/shortcut-downloads/{job_id}", response_model=ShortcutDownloadResponse, response_model_exclude_none=True)
 async def get_shortcut_download(job_id: str, request: Request) -> ShortcutDownloadResponse:
     job_directory = get_job_directory(job_id)
     if not job_directory.is_dir():
@@ -537,8 +542,8 @@ async def get_shortcut_download(job_id: str, request: Request) -> ShortcutDownlo
         media_files = list_media_files(job_directory)
         if not media_files:
             return ShortcutDownloadResponse(success=False, job_id=job_id, status="failed", expires_at=expires_at, error="The server completed the download without any media files.")
-        return ShortcutDownloadResponse(success=True, job_id=job_id, status=status, expires_at=expires_at, files=[file_link(request, job_id, media_file) for media_file in media_files])
-    return ShortcutDownloadResponse(success=False if status == "failed" else True, job_id=job_id, status=status, expires_at=expires_at, error=manifest.get("error") if isinstance(manifest.get("error"), str) else None)
+        return ShortcutDownloadResponse(success=True, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at, files=[file_link(request, job_id, media_file) for media_file in media_files])
+    return ShortcutDownloadResponse(success=False if status == "failed" else True, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at, error=manifest.get("error") if isinstance(manifest.get("error"), str) else None)
 
 
 @app.get("/v1/files/{job_id}/{filename}")

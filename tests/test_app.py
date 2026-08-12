@@ -229,10 +229,14 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
         assert started_response.success is True
         assert started_response.status == "queued"
         assert started_response.job_id is not None
+        assert started_response.files is None
+        assert started_response.poll_url == f"https://downloads.example/v1/shortcut-downloads/{started_response.job_id}"
         assert await asyncio.to_thread(download_started.wait, 1)
         in_progress_response = await app.get_shortcut_download(started_response.job_id, request)
         assert in_progress_response.success is True
         assert in_progress_response.status == "downloading"
+        assert in_progress_response.files is None
+        assert in_progress_response.poll_url == started_response.poll_url
         release_download.set()
         for _ in range(20):
             completed_response = await app.get_shortcut_download(started_response.job_id, request)
@@ -243,6 +247,8 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
             raise AssertionError("The queued Shortcut download did not complete.")
         assert completed_response.success is True
         assert completed_response.status == "completed"
+        assert completed_response.poll_url == started_response.poll_url
+        assert completed_response.files is not None
         assert completed_response.files[0].download_path.startswith(f"/v1/files/{started_response.job_id}/")
 
     asyncio.run(verify_shortcut_job())
