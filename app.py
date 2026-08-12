@@ -90,10 +90,10 @@ class ShortcutDownloadResponse(BaseModel):
     status: str
     poll_url: str | None = None
     expires_at: datetime | None = None
-    # Shortcuts treats an omitted dictionary value as an exceptional result.
-    # Keep the key present with an empty string until a job actually fails so
-    # its repeat loop can safely continue through queued/downloading states.
-    error: str = ""
+    # Shortcuts treats an omitted dictionary value as an exceptional result
+    # and can treat empty text as a value.  Keep a concrete empty list until
+    # a job actually fails, matching the reliable `files: []` branch below.
+    error: str | list[str] = Field(default_factory=list)
     # Keep this present even while the background job is pending.  Shortcuts
     # handles an empty JSON list reliably, whereas a missing key can abort a
     # repeat before it reaches the next poll.
@@ -549,7 +549,10 @@ async def get_shortcut_download(job_id: str, request: Request) -> ShortcutDownlo
         if not media_files:
             return ShortcutDownloadResponse(success=False, job_id=job_id, status="failed", expires_at=expires_at, error="The server completed the download without any media files.")
         return ShortcutDownloadResponse(success=True, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at, files=[file_link(request, job_id, media_file) for media_file in media_files])
-    return ShortcutDownloadResponse(success=False if status == "failed" else True, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at, error=manifest.get("error") if isinstance(manifest.get("error"), str) else "")
+    if status == "failed":
+        error = manifest.get("error")
+        return ShortcutDownloadResponse(success=False, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at, error=error if isinstance(error, str) and error else "The downloader failed without an error message.")
+    return ShortcutDownloadResponse(success=True, job_id=job_id, status=status, poll_url=shortcut_poll_url(request, job_id), expires_at=expires_at)
 
 
 @app.get("/v1/files/{job_id}/{filename}")
