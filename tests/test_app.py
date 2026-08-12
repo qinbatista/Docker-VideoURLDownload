@@ -205,7 +205,7 @@ def test_simultaneous_shortcut_jobs_are_isolated_and_queue_after_two(monkeypatch
 
     downloads = asyncio.run(verify_isolated_jobs())
 
-    assert all(download.files[0].download_path.startswith(f"/v1/files/{download.job_id}/") for download in downloads)
+    assert all(download.files[0].download_path.startswith(f"/video-download/{download.job_id}/") for download in downloads)
 
 
 def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatch, tmp_path) -> None:
@@ -231,7 +231,7 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
         assert started_response.job_id is not None
         assert started_response.files == []
         assert started_response.error is None
-        assert started_response.poll_url == f"https://downloads.example/v1/shortcut-downloads/{started_response.job_id}"
+        assert started_response.poll_url == f"https://downloads.example/video-download/{started_response.job_id}"
         assert await asyncio.to_thread(download_started.wait, 1)
         in_progress_response = await app.get_shortcut_download(started_response.job_id, request)
         assert in_progress_response.success is True
@@ -251,13 +251,13 @@ def test_shortcut_download_starts_immediately_then_reports_completion(monkeypatc
         assert completed_response.status == "completed"
         assert completed_response.poll_url == started_response.poll_url
         assert completed_response.files
-        assert completed_response.files[0].download_path.startswith(f"/v1/files/{started_response.job_id}/")
+        assert completed_response.files[0].download_path.startswith(f"/video-download/{started_response.job_id}/")
 
     asyncio.run(verify_shortcut_job())
 
 
 def test_pending_shortcut_response_keeps_an_explicit_empty_files_array() -> None:
-    response = app.ShortcutDownloadResponse(success=True, job_id="job", status="queued", poll_url="https://downloads.example/v1/shortcut-downloads/job")
+    response = app.ShortcutDownloadResponse(success=True, job_id="job", status="queued", poll_url="https://downloads.example/video-download/job")
 
     assert response.model_dump(exclude_none=True)["files"] == []
     assert "error" not in response.model_dump(exclude_none=True)
