@@ -138,8 +138,11 @@ def test_download_media_accepts_a_static_image_from_yt_dlp(monkeypatch, tmp_path
     class ImageYoutubeDL:
         download_errors: list[str] = []
 
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
+        def __init__(self, downloader_options) -> None:
+            assert downloader_options["format"] == app.IPHONE_FORMAT_SELECTOR
+            assert "bestvideo[vcodec^=avc1][ext=mp4]" in downloader_options["format"]
+            assert "bestaudio[acodec^=mp4a][ext=m4a]" in downloader_options["format"]
+            assert "[height<=720]" in downloader_options["format"]
 
         def __enter__(self):
             return self
@@ -154,6 +157,30 @@ def test_download_media_accepts_a_static_image_from_yt_dlp(monkeypatch, tmp_path
     monkeypatch.setattr(app, "PublicOnlyYoutubeDL", ImageYoutubeDL)
 
     assert app.download_media("https://images.example/photo.jpg", tmp_path, 1) == [tmp_path / "001-photo.jpg"]
+
+
+def test_simultaneous_shortcut_jobs_keep_their_media_in_isolated_directories(monkeypatch, tmp_path) -> None:
+    async def verify_isolated_jobs() -> list[app.DownloadResponse]:
+        recorded_job_directories: list[Path] = []
+
+        def fake_download_media(_source_url: str, job_directory: Path, _max_items: int) -> list[Path]:
+            recorded_job_directories.append(job_directory)
+            media_file = job_directory / "clip.mp4"
+            media_file.write_bytes(b"video")
+            return [media_file]
+
+        monkeypatch.setattr(app, "jobs_directory", tmp_path / "jobs")
+        monkeypatch.setattr(app, "validate_public_http_url", lambda _url: None)
+        monkeypatch.setattr(app, "download_media", fake_download_media)
+        request = SimpleNamespace(base_url="https://downloads.example/")
+        downloads = await asyncio.gather(app.create_download(app.DownloadRequest(url="https://youtube.com/watch?v=example"), request), app.create_download(app.DownloadRequest(url="https://instagram.com/reel/example"), request))
+        assert len(set(recorded_job_directories)) == 2
+        assert all(job_directory.parent == app.jobs_directory for job_directory in recorded_job_directories)
+        return downloads
+
+    downloads = asyncio.run(verify_isolated_jobs())
+
+    assert all(download.files[0].download_path.startswith(f"/v1/files/{download.job_id}/") for download in downloads)
 
 
 def test_shortcut_download_returns_a_failure_message_instead_of_an_empty_success(monkeypatch) -> None:

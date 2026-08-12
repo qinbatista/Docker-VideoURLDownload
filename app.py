@@ -34,6 +34,7 @@ IMAGE_MIME_PREFIX = "image/"
 IPHONE_IMAGE_SUFFIXES = {".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png"}
 MAX_PAGE_HTML_BYTES = 1_000_000
 IMAGE_READ_CHUNK_BYTES = 64 * 1024
+IPHONE_FORMAT_SELECTOR = "bestvideo[vcodec^=avc1][ext=mp4][height<=720]+bestaudio[acodec^=mp4a][ext=m4a]/best[vcodec^=avc1][acodec^=mp4a][ext=mp4][height<=720]/bv*+ba/b"
 
 
 def positive_integer(name: str, default: int) -> int:
@@ -326,7 +327,7 @@ def download_page_images(source_url: str, job_directory: Path, max_items: int) -
 
 
 def download_media(source_url: str, job_directory: Path, max_items: int) -> list[Path]:
-    downloader_options = {"outtmpl": str(job_directory / "%(autonumber)03d-%(id)s.%(ext)s"), "format": "bv*+ba/b", "merge_output_format": "mp4", "noplaylist": False, "playlistend": max_items, "max_filesize": settings.max_file_size_bytes, "nopart": True, "continuedl": False, "overwrites": False, "quiet": True, "no_warnings": True, "noprogress": True, "ignoreerrors": True, "retries": 2, "fragment_retries": 2, "socket_timeout": 30, "concurrent_fragment_downloads": 2, "restrictfilenames": True, "js_runtimes": {"node": {}}}
+    downloader_options = {"outtmpl": str(job_directory / "%(autonumber)03d-%(id)s.%(ext)s"), "format": IPHONE_FORMAT_SELECTOR, "merge_output_format": "mp4", "noplaylist": False, "playlistend": max_items, "max_filesize": settings.max_file_size_bytes, "nopart": True, "continuedl": False, "overwrites": False, "quiet": True, "no_warnings": True, "noprogress": True, "ignoreerrors": True, "retries": 2, "fragment_retries": 2, "socket_timeout": 30, "concurrent_fragment_downloads": 2, "restrictfilenames": True, "js_runtimes": {"node": {}}}
     downloader = PublicOnlyYoutubeDL(downloader_options)
     try:
         with downloader:
